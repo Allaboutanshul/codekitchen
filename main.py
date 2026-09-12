@@ -4,17 +4,29 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from firebase_admin import firestore
 
 from ai_service import generate_optimization
-from database import batch_ingest_applications, save_application
+from database import batch_ingest_applications, get_firestore_client, save_application
 from models import HistoricalApplication, OptimizePipelineRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="FitMatch AI", version="1.0.0")
+
+# Cloud Run domains are dynamic; open CORS keeps local dev and deployed
+# frontend origins working without managing a rotating origin allowlist.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -81,3 +93,18 @@ async def ingest_historical_data(
     except Exception as error:
         logger.exception("Historical data ingestion failed")
         raise HTTPException(status_code=500, detail="Historical data ingestion failed") from error
+
+
+@app.get("/api/v1/applications")
+async def list_applications() -> list[dict[str, Any]]:
+    try:
+        db = get_firestore_client()
+        docs = (
+            db.collection("applications")
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .stream()
+        )
+        return [{**doc.to_dict(), "id": doc.id} for doc in docs]
+    except Exception as error:
+        logger.exception("Failed to list applications")
+        raise HTTPException(status_code=500, detail="Failed to fetch applications") from error
